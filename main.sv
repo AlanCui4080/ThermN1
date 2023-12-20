@@ -26,14 +26,7 @@ module signed_extensior
     input   logic   [sign_bit:0]    in_num,
     output  logic   [63:0]    out_num
 );
-    
-    logic   [63:0]  base_set    = ~0;
-    logic   [63:0]  base_reset  = 64'h0;
-    
-    assign  base_set[sign_bit:0] = in_num;
-    assign  base_reset[sign_bit:0] = in_num;
-    assign  out_num = in_num[sign_bit] ? base_set : base_reset;
-    
+    assign  out_num = {{(63 - sign_bit){in_num[sign_bit]}}, in_num};
 endmodule
 
 module therm_n1_decode(
@@ -95,7 +88,7 @@ module therm_n1_decode(
 
     always @(posedge clock) begin
         if(instruction[1:0] != 2'b11) begin
-            reset_neg = 0;
+            reset_neg <= 0;
             $display ("Ill-formed instruction or not supported: %h",instruction);
             $finish;
         end
@@ -147,12 +140,6 @@ module therm_n1_fetch
             memory.chip_enable      <= 0;
         end
     end
-
-    specify
-        clock *> instruction = TARGET_CLOCK_PERIOD;
-        $hold(clock, memory.data_load, TARGET_CLOCK_PERIOD * 0.2);
-    endspecify
-
 endmodule
 
 
@@ -166,8 +153,7 @@ module therm_n1 (
     logic   fetch_tick = tick_tock == 0'd0 ? 1 : 0;
     logic   decode_tick = tick_tock == 0'd1 ? 1 : 0;
 
-    always @(posedge primary_clock or negedge reset_neg) begin
-        if(reset_neg)
+    always @(posedge primary_clock) begin
         tick_tock <= tick_tock + 1;
     end
 
