@@ -8,8 +8,8 @@ endinterface
 interface therm_simple_memory (
     input   bit     clock
 );
-    logic   [31:0]  data_store;
-    logic   [31:0]  data_load;
+    logic   [63:0]  data_store;
+    logic   [63:0]  data_load;
     logic   [63:0]  address;
 
     bit     write_enable;
@@ -18,68 +18,110 @@ endinterface
 
 typedef logic [31:0] word;
 
-module therm_n1_decode_i_type
+module signed_extensior
+#(
+    parameter   sign_bit = 63
+)
 (
-    input   logic       reset_neg,
-    therm_n1_register   register,
-    input   word        instruction,
-
-    inout   logic   [63:0]       rd,
-    inout   logic   [63:0]       rs1,
-    inout   integer imm
+    input   logic   [sign_bit:0]    in_num,
+    output  logic   [63:0]    out_num
 );
-    //wtf
-    assign rd           = reset_neg ? register.value[ instruction[11:7] ] : 64'bZ;
-    assign rs1          = reset_neg ? register.value[ instruction[19:15] ] : 64'bZ;
-    assign imm[11:0]    = reset_neg ? instruction[31:20] : 12'bZ;
-
-    specify
-        clock *> rd  = TARGET_CLOCK_PERIOD;
-        clock *> rs1 = TARGET_CLOCK_PERIOD;
-    endspecify
-
+    
+    logic   [63:0]  base_set    = ~0;
+    logic   [63:0]  base_reset  = 64'h0;
+    
+    assign  base_set[sign_bit:0] = in_num;
+    assign  base_reset[sign_bit:0] = in_num;
+    assign  out_num = in_num[sign_bit] ? base_set : base_reset;
+    
 endmodule
 
 module therm_n1_decode(
     input   bit         clock,
     input   word        instruction,
     therm_n1_register   register,
+    therm_simple_memory memory,
     inout   logic       reset_neg
 );
-
-    logic   i_type_en = 0;
-
-    integer imm;
     logic   [63:0]   rd;
     logic   [63:0]   rs1;
     logic   [63:0]   rs2;
+    logic   [63:0]   imm20;
 
-    therm_n1_decode_i_type i_type (
-        .reset_neg  (reset_neg ? i_type_en : 0),
-        .register (register),
-        .instruction(instruction),
-        .rd         (rd),
-        .rs1        (rs1),
-        .imm        (imm)
+    assign rs1 = register.value[instruction[19:15]];
+    assign rs2 = register.value[instruction[24:20]];
+    assign rd  = register.value[instruction[11:7]];
+    
+    signed_extensior  #(.sign_bit(19)) extensior_imm20 (
+        .in_num(instruction[31:12]),
+        .out_num(imm20)
     );
 
-    always @(*) begin
+    logic   [63:0]  signed_extensior_number;
+
+    logic   [63:0]  signed_extensior_out;
+    logic   [63:0]  signed_extensior_outb;
+    logic   [63:0]  signed_extensior_outh;
+    logic   [63:0]  signed_extensior_outw;
+    logic   [63:0]  signed_extensior_outd;
+
+    logic   [1:0]   signed_extensior_sel;
+    assign  signed_extensior_out = 
+    signed_extensior_sel == 2'b00 ? signed_extensior_outb :
+    signed_extensior_sel == 2'b01 ? signed_extensior_outh :
+    signed_extensior_sel == 2'b10 ? signed_extensior_outw :
+                                    signed_extensior_outd;
+
+    signed_extensior  #(.sign_bit(7)) extensior_byte (
+        .in_num(signed_extensior_number[7:0]),
+        .out_num(signed_extensior_outb)
+    );
+    signed_extensior  #(.sign_bit(15)) extensior_half (
+        .in_num(signed_extensior_number[15:0]),
+        .out_num(signed_extensior_outb)
+    );
+
+    signed_extensior  #(.sign_bit(31)) extensior_word (
+        .in_num(signed_extensior_number[31:0]),
+        .out_num(signed_extensior_outb)
+    );
+
+    signed_extensior  #(.sign_bit(63)) extensior_dword (
+        .in_num(signed_extensior_number),
+        .out_num(signed_extensior_outb)
+    );
+
+    
+
+    always @(posedge clock) begin
         if(instruction[1:0] != 2'b11) begin
             reset_neg = 0;
             $display ("Ill-formed instruction or not supported: %h",instruction);
             $finish;
         end
-
         /* verilator lint_off CASEINCOMPLETE */
-
         case(instruction[6:2])
             5'b00_000: begin    //LOAD
-                i_type_en  = 1;
+
+            memory.address      <= rs1 + imm20;
+            memory.write_enable <= 0;
+            memory.chip_enable  <= 1;
+            
             end
         endcase
     end
-
-
+    
+    always @(negedge memory.clock) begin
+        /* verilator lint_off CASEINCOMPLETE */
+        case(instruction[6:2])
+            5'b00_000: begin    //LOAD
+            signed_extensior_number <= memory.data_load;
+            memory.chip_enable      <= 0;
+            signed_extensior_sel    <= instruction[15:14];
+            rd                      <= instruction[16] ? signed_extensior_number : signed_extensior_out;
+            end
+        endcase
+    end
 endmodule
 
 module therm_n1_fetch
@@ -101,7 +143,7 @@ module therm_n1_fetch
 
     always @(negedge memory.clock) begin
         if( wait_for_read ) begin
-            instruction             <= memory.data_load;
+            instruction             <= memory.data_load[31:0];
             memory.chip_enable      <= 0;
         end
     end
@@ -147,6 +189,7 @@ module therm_n1 (
         .clock (decode_tick),
         .reset_neg (reset_neg),
         .instruction (instruction),
+        .memory (memory),
         .register (register)
     );
 endmodule
